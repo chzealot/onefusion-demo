@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Custom Sub - Article to Video</title>
+  <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
+      --border: #475569; --text: #f1f5f9; --text2: #94a3b8;
+      --primary: #3b82f6; --primary-hover: #2563eb;
+      --success: #22c55e; --warning: #f59e0b; --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+    .fade-enter-active, .fade-leave-active { transition: opacity .2s; }
+    .fade-enter-from, .fade-leave-to { opacity: 0; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+    textarea:focus, input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(59,130,246,0.3); }
+    .btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 500; transition: all .15s; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+    .btn-danger:hover { background: var(--danger); color: white; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .status-badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+    .status-pending { background: var(--surface2); color: var(--text2); }
+    .status-generating_script, .status-generating_tts, .status-generating_animation, .status-rendering { background: rgba(59,130,246,0.2); color: var(--primary); }
+    .status-completed { background: rgba(34,197,94,0.2); color: var(--success); }
+    .status-failed { background: rgba(239,68,68,0.2); color: var(--danger); }
+    .status-stopped { background: rgba(245,158,11,0.2); color: var(--warning); }
+    .session-item { position: relative; }
+    .session-actions { opacity: 0; transition: opacity .15s; }
+    .session-item:hover .session-actions { opacity: 1; }
+    .step-icon { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 11px; }
+    .step-pending { background: var(--surface2); }
+    .step-in_progress { background: var(--primary); animation: pulse 1.5s infinite; }
+    .step-completed { background: var(--success); }
+    .step-failed { background: var(--danger); }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+    .video-container { background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; }
+    .scene-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; transition: border-color .15s; }
+    .scene-card:hover { border-color: var(--primary); }
+    .scene-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(59,130,246,0.3); }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div style="display:flex; height:100vh;">
+    <!-- Sidebar -->
+    <div style="width:320px; background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column;">
+      <div style="padding:16px; border-bottom:1px solid var(--border);">
+        <h1 style="font-size:18px; font-weight:700; margin:0 0 12px 0;">Custom Sub</h1>
+        <button class="btn btn-primary" style="width:100%;" @click="showNewDialog=true">+ New Video</button>
+      </div>
+      <div style="flex:1; overflow-y:auto; padding:8px;">
+        <div v-if="sessions.length===0" style="text-align:center; color:var(--text2); padding:40px 16px; font-size:14px;">
+          No sessions yet
+        </div>
+        <div v-for="s in sessions" :key="s.session_id"
+             class="session-item"
+             @click="selectSession(s.session_id)"
+             :style="{padding:'12px', borderRadius:'8px', cursor:'pointer', marginBottom:'4px', background: currentSessionId===s.session_id ? 'var(--surface2)' : 'transparent'}">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+            <span :class="'status-badge status-'+s.status">{{s.status}}</span>
+            <div class="session-actions" style="display:flex; gap:4px;">
+              <button class="btn btn-sm btn-danger" @click.stop="stopSession(s.session_id)" v-if="isRunning(s.status)" title="Stop">⏹</button>
+              <button class="btn btn-sm btn-danger" @click.stop="deleteSession(s.session_id)" title="Delete">🗑</button>
+            </div>
+          </div>
+          <div style="font-size:13px; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+            {{s.article_preview || 'No preview'}}
+          </div>
+          <div style="font-size:11px; color:var(--text2); margin-top:4px;">
+            {{formatDate(s.created_at)}}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+      <!-- No session selected -->
+      <div v-if="!currentSessionId" style="flex:1; display:flex; align-items:center; justify-content:center; color:var(--text2);">
+        <div style="text-align:center;">
+          <div style="font-size:48px; margin-bottom:16px;">🎬</div>
+          <div style="font-size:16px;">Select a session or create a new one</div>
+        </div>
+      </div>
+
+      <!-- Session detail -->
+      <div v-else style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+        <!-- Progress bar -->
+        <div style="padding:16px 24px; background:var(--surface); border-bottom:1px solid var(--border);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+            <div>
+              <span :class="'status-badge status-'+sessionDetail?.status">{{sessionDetail?.status}}</span>
+              <span style="margin-left:8px; font-size:14px; color:var(--text2);">{{currentSessionId}}</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-primary btn-sm" @click="showResumeDialog=true"
+                      v-if="sessionDetail?.status==='completed'||sessionDetail?.status==='failed'">
+                Resume & Modify
+              </button>
+              <button class="btn btn-primary btn-sm" @click="renderFullVideo"
+                      v-if="sessionDetail?.status==='completed' && scenes.length>0">
+                Render Full Video
+              </button>
+              <a :href="'/api/sessions/'+currentSessionId+'/video'" class="btn btn-primary btn-sm"
+                 v-if="sessionDetail?.status==='completed'" target="_blank">
+                Download Video
+              </a>
+            </div>
+          </div>
+          <!-- Steps -->
+          <div style="display:flex; gap:24px;">
+            <div v-for="step in sessionDetail?.steps||[]" :key="step.name" style="display:flex; align-items:center; gap:6px;">
+              <span :class="'step-icon step-'+step.status">
+                <span v-if="step.status==='completed'">✓</span>
+                <span v-else-if="step.status==='failed'">✗</span>
+                <span v-else-if="step.status==='in_progress'">…</span>
+              </span>
+              <span style="font-size:13px;">{{step.name}}</span>
+            </div>
+          </div>
+          <div v-if="sessionDetail?.error" style="margin-top:8px; padding:8px 12px; background:rgba(239,68,68,0.1); border-radius:6px; color:var(--danger); font-size:13px;">
+            {{sessionDetail.error}}
+          </div>
+        </div>
+
+        <!-- Content area -->
+        <div style="flex:1; overflow-y:auto; padding:24px;">
+          <!-- Scene grid -->
+          <div v-if="scenes.length>0">
+            <h3 style="font-size:16px; font-weight:600; margin:0 0 16px 0;">Scenes</h3>
+            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:16px; margin-bottom:24px;">
+              <div v-for="scene in scenes" :key="scene.scene"
+                   :class="['scene-card', activeScene===scene.scene ? 'active' : '']"
+                   @click="playScene(scene)">
+                <div class="video-container" style="aspect-ratio:16/9; display:flex; align-items:center; justify-content:center; position:relative;">
+                  <video v-if="scene.video_url && activeScene===scene.scene"
+                         :src="scene.video_url"
+                         ref="sceneVideoRef"
+                         :loop="loopScene"
+                         autoplay
+                         style="width:100%; height:100%; object-fit:contain;">
+                  </video>
+                  <div v-else style="color:var(--text2); font-size:13px;">
+                    {{scene.ready ? '▶ Click to play' : 'Not rendered yet'}}
+                  </div>
+                </div>
+                <div style="padding:10px 12px;">
+                  <div style="font-size:13px; font-weight:600;">Scene {{scene.scene}}</div>
+                  <div style="font-size:12px; color:var(--text2); margin-top:2px;">{{scene.name}}</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Playback controls -->
+            <div v-if="activeScene" style="background:var(--surface); border-radius:8px; padding:16px; margin-bottom:24px;">
+              <div style="display:flex; align-items:center; gap:12px;">
+                <span style="font-size:14px; font-weight:600;">Now playing: Scene {{activeScene}}</span>
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+                  <input type="checkbox" v-model="loopScene" />
+                  Loop
+                </label>
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+                  <input type="checkbox" v-model="autoPlayNext" />
+                  Auto play next
+                </label>
+                <button class="btn btn-primary btn-sm" @click="playAllScenes">Play All</button>
+              </div>
+            </div>
+
+            <!-- Full video -->
+            <div v-if="hasFullVideo">
+              <h3 style="font-size:16px; font-weight:600; margin:0 0 16px 0;">Full Video</h3>
+              <div class="video-container" style="max-width:800px;">
+                <video :src="'/api/sessions/'+currentSessionId+'/video'"
+                       controls style="width:100%; height:100%;">
+                </video>
+              </div>
+            </div>
+          </div>
+
+          <!-- Article preview -->
+          <div v-if="sessionDetail?.article_preview" style="margin-top:24px;">
+            <h3 style="font-size:16px; font-weight:600; margin:0 0 8px 0;">Article Preview</h3>
+            <div style="background:var(--surface); border-radius:8px; padding:16px; font-size:14px; color:var(--text2); line-height:1.6;">
+              {{sessionDetail.article_preview}}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- New session dialog -->
+  <div v-if="showNewDialog" style="position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:1000;" @click.self="showNewDialog=false">
+    <div style="background:var(--surface); border-radius:12px; padding:24px; width:600px; max-height:80vh; overflow-y:auto;">
+      <h2 style="font-size:18px; font-weight:700; margin:0 0 16px 0;">New Video</h2>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:13px; color:var(--text2); display:block; margin-bottom:4px;">Article</label>
+        <textarea v-model="newArticle" rows="12"
+                  style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--text); font-size:14px; resize:vertical;"
+                  placeholder="Paste your article here..."></textarea>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="font-size:13px; color:var(--text2); display:block; margin-bottom:4px;">Requirements (optional)</label>
+        <textarea v-model="newRequirements" rows="3"
+                  style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--text); font-size:14px; resize:vertical;"
+                  placeholder="Any specific requirements for the video..."></textarea>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button class="btn" style="background:var(--surface2); color:var(--text);" @click="showNewDialog=false">Cancel</button>
+        <button class="btn btn-primary" @click="createSession" :disabled="!newArticle.trim()">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resume dialog -->
+  <div v-if="showResumeDialog" style="position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:1000;" @click.self="showResumeDialog=false">
+    <div style="background:var(--surface); border-radius:12px; padding:24px; width:500px;">
+      <h2 style="font-size:18px; font-weight:700; margin:0 0 16px 0;">Resume & Modify</h2>
+      <div style="margin-bottom:16px;">
+        <label style="font-size:13px; color:var(--text2); display:block; margin-bottom:4px;">Modification prompt</label>
+        <textarea v-model="resumePrompt" rows="5"
+                  style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--text); font-size:14px; resize:vertical;"
+                  placeholder="Describe what you'd like to change..."></textarea>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button class="btn" style="background:var(--surface2); color:var(--text);" @click="showResumeDialog=false">Cancel</button>
+        <button class="btn btn-primary" @click="resumeSession" :disabled="!resumePrompt.trim()">Resume</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted, onUnmounted } = Vue
+
+createApp({
+  setup() {
+    const sessions = ref([])
+    const currentSessionId = ref(null)
+    const sessionDetail = ref(null)
+    const scenes = ref([])
+    const activeScene = ref(null)
+    const loopScene = ref(false)
+    const autoPlayNext = ref(true)
+    const hasFullVideo = ref(false)
+
+    const showNewDialog = ref(false)
+    const showResumeDialog = ref(false)
+    const newArticle = ref('')
+    const newRequirements = ref('')
+    const resumePrompt = ref('')
+
+    let pollTimer = null
+
+    const api = async (url, opts = {}) => {
+      const res = await fetch(url, {
+        headers: { 'Content-Type': 'application/json', ...opts.headers },
+        ...opts,
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }))
+        throw new Error(err.detail || 'Request failed')
+      }
+      return res.json()
+    }
+
+    const loadSessions = async () => {
+      try {
+        const data = await api('/api/sessions')
+        sessions.value = data.sessions
+      } catch (e) { console.error(e) }
+    }
+
+    const selectSession = async (id) => {
+      currentSessionId.value = id
+      activeScene.value = null
+      await loadSessionDetail()
+      await loadScenes()
+    }
+
+    const loadSessionDetail = async () => {
+      if (!currentSessionId.value) return
+      try {
+        sessionDetail.value = await api(`/api/sessions/${currentSessionId.value}`)
+      } catch (e) { console.error(e) }
+    }
+
+    const loadScenes = async () => {
+      if (!currentSessionId.value) return
+      try {
+        const data = await api(`/api/sessions/${currentSessionId.value}/scenes`)
+        scenes.value = data.scenes || []
+        // Check if full video exists
+        try {
+          const resp = await fetch(`/api/sessions/${currentSessionId.value}/video`, { method: 'HEAD' })
+          hasFullVideo.value = resp.ok
+        } catch { hasFullVideo.value = false }
+      } catch (e) { console.error(e) }
+    }
+
+    const createSession = async () => {
+      try {
+        const data = await api('/api/sessions', {
+          method: 'POST',
+          body: JSON.stringify({ article: newArticle.value, requirements: newRequirements.value }),
+        })
+        showNewDialog.value = false
+        newArticle.value = ''
+        newRequirements.value = ''
+        await loadSessions()
+        selectSession(data.session_id)
+      } catch (e) { alert(e.message) }
+    }
+
+    const resumeSession = async () => {
+      try {
+        await api(`/api/sessions/${currentSessionId.value}/resume`, {
+          method: 'POST',
+          body: JSON.stringify({ prompt: resumePrompt.value }),
+        })
+        showResumeDialog.value = false
+        resumePrompt.value = ''
+      } catch (e) { alert(e.message) }
+    }
+
+    const stopSession = async (id) => {
+      try {
+        await api(`/api/sessions/${id}/stop`, { method: 'POST' })
+        await loadSessions()
+        if (currentSessionId.value === id) await loadSessionDetail()
+      } catch (e) { alert(e.message) }
+    }
+
+    const deleteSession = async (id) => {
+      if (!confirm('Delete this session and all data?')) return
+      try {
+        await api(`/api/sessions/${id}`, { method: 'DELETE' })
+        if (currentSessionId.value === id) {
+          currentSessionId.value = null
+          sessionDetail.value = null
+          scenes.value = []
+        }
+        await loadSessions()
+      } catch (e) { alert(e.message) }
+    }
+
+    const playScene = (scene) => {
+      if (!scene.ready) return
+      activeScene.value = scene.scene
+    }
+
+    const playAllScenes = () => {
+      autoPlayNext.value = true
+      loopScene.value = false
+      const first = scenes.value.find(s => s.ready)
+      if (first) activeScene.value = first.scene
+    }
+
+    const renderFullVideo = async () => {
+      try {
+        await api(`/api/sessions/${currentSessionId.value}/render`, { method: 'POST' })
+        await loadSessionDetail()
+        hasFullVideo.value = true
+      } catch (e) { alert(e.message) }
+    }
+
+    const isRunning = (status) => {
+      return ['pending','generating_script','generating_tts','generating_animation','rendering'].includes(status)
+    }
+
+    const formatDate = (d) => {
+      if (!d) return ''
+      return new Date(d).toLocaleString('zh-CN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })
+    }
+
+    // Polling
+    onMounted(() => {
+      loadSessions()
+      pollTimer = setInterval(async () => {
+        await loadSessions()
+        if (currentSessionId.value) {
+          await loadSessionDetail()
+          await loadScenes()
+        }
+      }, 3000)
+    })
+
+    onUnmounted(() => {
+      if (pollTimer) clearInterval(pollTimer)
+    })
+
+    return {
+      sessions, currentSessionId, sessionDetail, scenes,
+      activeScene, loopScene, autoPlayNext, hasFullVideo,
+      showNewDialog, showResumeDialog,
+      newArticle, newRequirements, resumePrompt,
+      selectSession, createSession, resumeSession,
+      stopSession, deleteSession,
+      playScene, playAllScenes, renderFullVideo,
+      isRunning, formatDate, loadSessions,
+    }
+  }
+}).mount('#app')
+</script>
+</body>
+</html>
